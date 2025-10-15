@@ -1,0 +1,23 @@
+NUMBER TASK addNumbers with NUMBER a, NUMBER b DO {
+    NUMBER sum = a + b;
+    RETURN sum;
+}
+
+TASK greetUser with MESSAGE name DO {
+    IF [name EQUAL alex] THEN {
+        SHOW: "Hello Admin";
+    } ELSE THEN {
+        SHOW: "Hello " + name;
+    }
+}
+
+MESSAGE name;
+name ASK: "Enter your name: ";
+greetUser(name);
+
+SHOW: addNumbers(5, 7);
+SHOW: "Result: " + addNumbers(3, 4);
+
+
+NUMBER sum_result = addNumbers(8, 9);
+SHOW: sum_result;
