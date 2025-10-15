@@ -2,8 +2,10 @@ package humanlang;
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -528,6 +530,9 @@ final class Interpreter {
     // Function storage
     private static Map<String, FunctionDefinition> functions = new HashMap<>();
     
+    // Scope stack for nested variable scoping
+    private final Deque<Map<String, Object>> scopeStack = new ArrayDeque<>();
+    
     // Return value handling
     private Object returnValue = null;
     private boolean returnFlag = false;
@@ -625,9 +630,37 @@ final class Interpreter {
                     if (conditionTrue) {
                         executeBlock(block.toString(), variables);
                         skipElse = true;   // ✅ mark chain as already executed
+                        
+                        // CRITICAL FIX: If IF condition was true, skip ALL remaining ELSE IF/ELSE blocks
+                        if (closingLine != null && (closingLine.startsWith("}ELSE") || closingLine.startsWith("} ELSE"))) {
+                            // Skip all remaining ELSE IF/ELSE blocks in this chain
+                            // Since we already executed the IF block, skip everything until the end of the chain
+                            String remainingLine = closingLine;
+                            while (remainingLine != null && (remainingLine.startsWith("}ELSE") || remainingLine.startsWith("} ELSE"))) {
+                                // Skip the current ELSE IF/ELSE block
+                                if (remainingLine.contains("{")) {
+                                    int skipBraceCount = 1; // We already have one opening brace
+                                    while ((remainingLine = br.readLine()) != null && skipBraceCount > 0) {
+                                        String trimmedLine = remainingLine.trim();
+                                        if (trimmedLine.contains("}")) {
+                                            skipBraceCount--;
+                                            if (skipBraceCount == 0 && (trimmedLine.startsWith("}ELSE") || trimmedLine.startsWith("} ELSE"))) {
+                                                break; // Continue to next ELSE IF/ELSE
+                                            }
+                                        }
+                                        if (skipBraceCount > 0 && trimmedLine.contains("{")) skipBraceCount++;
+                                    }
+                    } else {
+                                    remainingLine = br.readLine();
+                                }
+                            }
+                        }
+                        // End of IF chain - reset flags and continue to next line
+                        inIfChain = false;
+                        skipElse = false;
+                        continue;
                     } else {
                         skipElse = false;  // ✅ still open to ELSE IF / ELSE
-                    }
                     
                     // Check if the closing line contains ELSE IF or ELSE on the same line
                     if (closingLine != null && (closingLine.startsWith("}ELSE") || closingLine.startsWith("} ELSE"))) {
@@ -636,14 +669,27 @@ final class Interpreter {
                         lineNumber++; // Increment line number since we're processing this line now
                         // Don't continue - let the code fall through to process ELSE IF/ELSE
                     } else {
+                            // End of IF chain
+                            inIfChain = false;
+                            skipElse = false;
                     continue;
+                        }
                     }
                 }
 
-                else if (line.startsWith("ELSE IF")) {
+                // Handle ELSE IF statements (including those that start with }ELSE IF)
+                else if (line.startsWith("ELSE IF") || line.startsWith("}ELSE IF") || line.startsWith("} ELSE IF")) {
                     if (!inIfChain) {
                         terminate(lineNumber, "Error: 'ELSE IF' without preceding IF.");
                     }
+                    
+                    // Clean up the line if it starts with }ELSE IF or } ELSE IF
+                    if (line.startsWith("}ELSE IF")) {
+                        line = "ELSE IF" + line.substring(8); // Remove "}ELSE IF" and replace with "ELSE IF"
+                    } else if (line.startsWith("} ELSE IF")) {
+                        line = "ELSE IF" + line.substring(9); // Remove "} ELSE IF" and replace with "ELSE IF"
+                    }
+                    
                     if (!line.contains("THEN")) {
                         terminate(lineNumber, "Error: Missing THEN in ELSE IF statement → " + line);
                     }
@@ -679,6 +725,16 @@ final class Interpreter {
                     if (conditionTrue) {
                         executeBlock(block.toString(), variables);
                         skipElse = true; // ✅ mark this chain as done
+                        
+                        // CRITICAL FIX: If ELSE IF condition was true, skip ALL remaining ELSE IF/ELSE blocks
+                        if (closingLine != null && (closingLine.startsWith("}ELSE") || closingLine.startsWith("} ELSE"))) {
+                            // Skip all remaining ELSE IF/ELSE blocks in this chain
+                            skipRemainingIfChain(br, closingLine);
+                        }
+                        // End of IF chain - reset flags and continue to next line
+                        inIfChain = false;
+                        skipElse = false;
+                        continue;
                     }
                     
                     // Check if the closing line contains ELSE IF or ELSE on the same line
@@ -688,15 +744,26 @@ final class Interpreter {
                         lineNumber++; // Increment line number since we're processing this line now
                         // Don't continue - let the code fall through to process ELSE IF/ELSE
                     } else {
+                        // End of IF chain
+                        inIfChain = false;
+                        skipElse = false;
                     continue;
                     }
                 }
 
-                else if (line.startsWith("ELSE")) {
-                    
+                // Handle ELSE statements (including those that start with }ELSE)
+                else if (line.startsWith("ELSE") || line.startsWith("}ELSE") || line.startsWith("} ELSE")) {
                     if (!inIfChain) {
                         terminate(lineNumber, "Error: 'ELSE' without preceding IF.");
                     }
+                    
+                    // Clean up the line if it starts with }ELSE or } ELSE
+                    if (line.startsWith("}ELSE")) {
+                        line = "ELSE" + line.substring(5); // Remove "}ELSE" and replace with "ELSE"
+                    } else if (line.startsWith("} ELSE")) {
+                        line = "ELSE" + line.substring(6); // Remove "} ELSE" and replace with "ELSE"
+                    }
+                    
                     if (!line.contains("THEN")) {
                         terminate(lineNumber, "Error: Missing THEN in ELSE statement → " + line);
                     }
@@ -706,7 +773,16 @@ final class Interpreter {
 
                     // ✅ If already executed one branch → skip this
                     if (skipElse) {
-                        skipBlock(br);
+                        // Skip the ELSE block - it starts with { after ELSE THEN
+                        int braceCount = 1; // We already have one opening brace from ELSE THEN {
+                        while ((line = br.readLine()) != null && braceCount > 0) {
+                            String trimmedLine = line.trim();
+                            if (trimmedLine.contains("}")) braceCount--;
+                            if (braceCount > 0 && trimmedLine.contains("{")) braceCount++;
+                        }
+                        // End of IF chain
+                        inIfChain = false;
+                        skipElse = false;
                         continue;
                     }
 
@@ -832,9 +908,9 @@ final class Interpreter {
                         if (isReservedKeyword(varName)) {
                             terminate(lineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                         }
-                        ensureGloballyUniqueVarName(varName, lineNumber);
+
                         if (parts.length < 2) {
-                            variables.put(varName, 0);
+                            setVariableValue(varName, 0);
                             continue; 
                         }
                         String valueExpr = parts[1].trim();
@@ -843,7 +919,7 @@ final class Interpreter {
                             double result = evaluateExpression(valueExpr, variables);
                             // Truncate decimal places (remove fractional part)
                             int truncatedValue = (int) result;
-                            variables.put(varName, truncatedValue);
+                            setVariableValue(varName, truncatedValue);
                         } catch (Exception e) {
                             terminate(lineNumber, "Error: Invalid NUMBER expression — must contain only numeric or valid variable values.");
                         }
@@ -870,9 +946,9 @@ final class Interpreter {
                     if (isReservedKeyword(varName)) {
                         terminate(lineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                     }
-                    ensureGloballyUniqueVarName(varName, lineNumber);
+                   
                     if (parts.length < 2) {
-                        variables.put(varName, 0.0);
+                            setVariableValue(varName, 0.0);
                         continue; // go to next line
                     }
 
@@ -880,7 +956,7 @@ final class Interpreter {
 
                     try {
                         double result = evaluateExpression(valueExpr, variables);
-                        variables.put(varName, result);
+                        setVariableValue(varName, result);
                     } catch (Exception e) {
                         terminate(lineNumber, "Error: Invalid DECIMAL expression — must contain only numeric or valid variable values.");
                         
@@ -909,10 +985,10 @@ final class Interpreter {
                         terminate(lineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                     }
 
-                    ensureGloballyUniqueVarName(varName, lineNumber);
+                    
                     // Allow declaration without initialization
                     if (parts.length < 2) {
-                        variables.put(varName, ' ');
+                        setVariableValue(varName, ' ');
                         continue;
                     }
 
@@ -932,7 +1008,7 @@ final class Interpreter {
                     }
 
                     // ✅ Passed all checks — store as char
-                    variables.put(varName, valueStr.charAt(1));
+                            setVariableValue(varName, valueStr.charAt(1));
                 // Handle MESSAGE variable declarations (strings)
                 }  else if (line.startsWith("MESSAGE")) {
                         line = line.replace("MESSAGE", "").trim();
@@ -965,10 +1041,9 @@ final class Interpreter {
                             terminate(lineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                         }
 
-                        ensureGloballyUniqueVarName(varName, lineNumber);
                         // Handle no initialization
                         if (valueStr == null) {
-                            variables.put(varName, "");
+                            setVariableValue(varName, "");
                             continue;
                         }
 
@@ -982,7 +1057,7 @@ final class Interpreter {
 
                         // ✅ Now call the new expression evaluator
                         String result = evaluateMessageExpression(valueStr, variables, lineNumber);
-                        variables.put(varName, result);
+                        setVariableValue(varName, result);
                 // Handle BINARY variable declarations (boolean values)
                 } else if (line.startsWith("BINARY")) {
                     line = line.replace("BINARY", "").trim();
@@ -1007,11 +1082,11 @@ final class Interpreter {
                         terminate(lineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                     }
 
-                    ensureGloballyUniqueVarName(varName, lineNumber);
+                    
 
                     try {
                         boolean result = evaluateBinaryExpression(valueExpr, variables);
-                        variables.put(varName, result ? "TRUE" : "FALSE");
+                        setVariableValue(varName, result ? "TRUE" : "FALSE");
                     } catch (Exception e) {
                         terminate("Error evaluating BINARY expression: " + e.getMessage());
                     }
@@ -1049,15 +1124,15 @@ final class Interpreter {
                     System.out.print(message);
                     String userInput = scanner.nextLine();
 
-                    Object value = variables.get(varName);
+                    Object value = getVariableValue(varName);
                     try {
                         if (value instanceof Integer) {
-                            variables.put(varName, Integer.parseInt(userInput));
+                            setVariableValue(varName, Integer.parseInt(userInput));
                         } else if (value instanceof Double) {
-                            variables.put(varName, Double.parseDouble(userInput));
+                            setVariableValue(varName, Double.parseDouble(userInput));
                         } else if (value instanceof Character) {
                             if (userInput.length() == 1) {
-                                variables.put(varName, userInput.charAt(0));
+                                setVariableValue(varName, userInput.charAt(0));
                             } else {
                                 terminate(lineNumber, "Error: Invalid input for LETTER, only one character is allowed.");
                             }
@@ -1065,12 +1140,12 @@ final class Interpreter {
                             // Check if it's a BINARY variable (stored as "TRUE" or "FALSE")
                             if (value.equals("TRUE") || value.equals("FALSE")) {
                                 if (userInput.equalsIgnoreCase("TRUE") || userInput.equalsIgnoreCase("FALSE")) {
-                                    variables.put(varName, userInput.toUpperCase());
+                                    setVariableValue(varName, userInput.toUpperCase());
                                 } else {
                                     terminate(lineNumber, "Error: Invalid input for BINARY, must be TRUE or FALSE only.");
                                 }
                             } else {
-                                variables.put(varName, userInput);
+                                setVariableValue(varName, userInput);
                             }
                         }
                     } catch (Exception e) {
@@ -1090,17 +1165,17 @@ final class Interpreter {
                         terminate(lineNumber, "Error: Variable '" + varName + "' not declared.");
                     }
 
-                    Object oldValue = variables.get(varName);
+                    Object oldValue = getVariableValue(varName);
 
                     try {
                         if (oldValue instanceof Integer) {
                             double result = evaluateExpression(valueExpr, variables);
                             // Truncate decimal places (remove fractional part)
                             int truncatedValue = (int) result;
-                            variables.put(varName, truncatedValue);
+                            setVariableValue(varName, truncatedValue);
                         } else if (oldValue instanceof Double) {
                             double result = evaluateExpression(valueExpr, variables);
-                            variables.put(varName, result);
+                            setVariableValue(varName, result);
                         } else if (oldValue instanceof Character) {
                             if (valueExpr.length() == 3 && valueExpr.startsWith("'") && valueExpr.endsWith("'")) {
                                 variables.put(varName, valueExpr.charAt(1));
@@ -1112,7 +1187,7 @@ final class Interpreter {
                             if (oldValue.equals("TRUE") || oldValue.equals("FALSE")) {
                                 // It's a BINARY variable
                             if (valueExpr.equalsIgnoreCase("TRUE") || valueExpr.equalsIgnoreCase("FALSE")) {
-                                variables.put(varName, valueExpr.toUpperCase());
+                                setVariableValue(varName, valueExpr.toUpperCase());
                             } else {
                                 terminate(lineNumber, "Error: Invalid value for BINARY variable.");
                                 }
@@ -1120,7 +1195,7 @@ final class Interpreter {
                                 // It's a MESSAGE variable
                                 if (valueExpr.startsWith("\"") && valueExpr.endsWith("\"")) {
                                     String rawString = valueExpr.substring(1, valueExpr.length() - 1);
-                                    variables.put(varName, processEscapeSequences(rawString));
+                                    setVariableValue(varName, processEscapeSequences(rawString));
                                 } else {
                                     terminate(lineNumber, "Error: MESSAGE must be assigned using double quotes.");
                                 }
@@ -1271,17 +1346,17 @@ final class Interpreter {
             }
             
             // Handle IF statements
-            if (line.startsWith("IF")) {
-                if (!line.contains("THEN")) {
-                    terminate(lineNumber, "Error: Missing THEN in IF statement → " + line);
+            if (line.startsWith("IF [")) {
+                // Use the new improved IF/ELSE IF/ELSE handling
+                int result = handleIfElseChain(lines, i, lineNumber);
+                if (result == -1) {
+                    // Single line processed, continue to next line
+                    continue;
+                } else {
+                    // Multi-line processed, jump to result index
+                    i = result;
+                    continue;
                 }
-                if (!line.contains("{")) {
-                    terminate(lineNumber, "Error: Missing '{' after THEN in IF statement → " + line);
-                }
-
-                // Process the entire IF-ELSE IF-ELSE chain and update index
-                i = processIfChainAndGetEndIndex(lines, i, lineNumber);
-                continue;
             }
             
             
@@ -1317,9 +1392,10 @@ final class Interpreter {
                 i--; // Adjust for the loop increment
                 String block = blockBuilder.toString();
                 
-                // Execute the loop
+                // Execute the loop with proper scoping
                 boolean wasInLoop = this.inLoop;
                 this.inLoop = true; // Mark that we're inside a loop
+                
                 while (evaluateBinaryExpression(condition, variables, lineNumber)) {
                     executeBlockInternal(block);
                     
@@ -1414,7 +1490,7 @@ final class Interpreter {
                 i = skipTASKBlock(lines, i);
                 continue;
             }
-
+            
             // Handle NUMBER variable declarations (integers)
                 if (line.startsWith("NUMBER ")) {
                 line = line.replace("NUMBER", "").trim();
@@ -1445,8 +1521,6 @@ final class Interpreter {
                     terminate(lineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                 }
                 
-                // Enforce global uniqueness across all types
-                ensureGloballyUniqueVarName(varName, lineNumber);
 
                 if (valueExpr == null) {
                     variables.put(varName, 0);
@@ -1494,17 +1568,15 @@ final class Interpreter {
                     terminate(lineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                 }
                 
-                // Enforce global uniqueness across all types
-                ensureGloballyUniqueVarName(varName, lineNumber);
 
                 if (valueExpr == null) {
-                    variables.put(varName, 0.0);
+                            setVariableValue(varName, 0.0);
                     continue;
                 }
                 
                 try {
                     double result = evaluateExpression(valueExpr, variables, lineNumber);
-                    variables.put(varName, result);
+                    setVariableValue(varName, result);
                 } catch (Exception e) {
                     terminate(lineNumber, "Error: Invalid DECIMAL expression — must contain only numeric or valid variable values.");
                 }
@@ -1541,16 +1613,14 @@ final class Interpreter {
                     terminate(lineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                 }
                 
-                // Enforce global uniqueness across all types
-                ensureGloballyUniqueVarName(varName, lineNumber);
 
                 if (value == null) {
-                    variables.put(varName, ' ');
+                    setVariableValue(varName, ' ');
                     continue;
                 }
                 
                 if (value.startsWith("'") && value.endsWith("'") && value.length() == 3) {
-                    variables.put(varName, value.charAt(1));
+                    setVariableValue(varName, value.charAt(1));
                 } else {
                     terminate(lineNumber, "Error: LETTER must be assigned a single character in single quotes → " + line);
                 }
@@ -1587,16 +1657,15 @@ final class Interpreter {
                     terminate(lineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                 }
                 
-                // Enforce global uniqueness across all types
-                ensureGloballyUniqueVarName(varName, lineNumber);
+                
 
                 if (valueExpr == null) {
-                    variables.put(varName, "");
+                    setVariableValue(varName, "");
                     continue;
                 }
                 try {
                     String result = evaluateMessageExpression(valueExpr, variables, lineNumber);
-                    variables.put(varName, result);
+                    setVariableValue(varName, result);
                 } catch (Exception e) {
                     terminate(lineNumber, "Error: Invalid MESSAGE expression → " + line);
                 }
@@ -1633,17 +1702,16 @@ final class Interpreter {
                     terminate(lineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                 }
                 
-                // Enforce global uniqueness across all types
-                ensureGloballyUniqueVarName(varName, lineNumber);
+               
 
                 if (valueExpr == null) {
-                    variables.put(varName, "FALSE");
+                    setVariableValue(varName, "FALSE");
                     continue;
                 }
                 
                 try {
                     boolean result = evaluateBinaryExpression(valueExpr, variables, lineNumber);
-                    variables.put(varName, result ? "TRUE" : "FALSE");
+                    setVariableValue(varName, result ? "TRUE" : "FALSE");
                 } catch (Exception e) {
                     terminate(lineNumber, "Error: Invalid BINARY expression.");
                 }
@@ -1685,11 +1753,11 @@ final class Interpreter {
                 String userInput = scanner.nextLine();
                 
                 try {
-                    Object value = variables.get(varName);
+                    Object value = getVariableValue(varName);
                     if (value instanceof Integer) {
-                        variables.put(varName, Integer.parseInt(userInput));
+                        setVariableValue(varName, Integer.parseInt(userInput));
                     } else if (value instanceof Double) {
-                        variables.put(varName, Double.parseDouble(userInput));
+                        setVariableValue(varName, Double.parseDouble(userInput));
                     } else if (value instanceof Character) {
                         if (userInput.length() == 1) {
                             variables.put(varName, userInput.charAt(0));
@@ -1771,7 +1839,7 @@ final class Interpreter {
                 
                 String valueExpr = parts[1].trim();
                 try {
-                    Object value = variables.get(varName);
+                    Object value = getVariableValue(varName);
                     if (value instanceof Integer) {
                         double result = evaluateExpression(valueExpr, variables, lineNumber);
                         // Truncate decimal places (remove fractional part)
@@ -1779,7 +1847,7 @@ final class Interpreter {
                         variables.put(varName, truncatedValue);
                     } else if (value instanceof Double) {
                         double result = evaluateExpression(valueExpr, variables, lineNumber);
-                        variables.put(varName, result);
+                        setVariableValue(varName, result);
                     } else if (value instanceof Character) {
                         if (valueExpr.startsWith("'") && valueExpr.endsWith("'") && valueExpr.length() == 3) {
                             variables.put(varName, valueExpr.charAt(1));
@@ -1795,11 +1863,11 @@ final class Interpreter {
                         } else {
                             // Handle string concatenation
                             String result = evaluateMessageExpression(valueExpr, variables, lineNumber);
-                            variables.put(varName, result);
+                            setVariableValue(varName, result);
                         }
                     } else if (value.equals("TRUE") || value.equals("FALSE")) {
                         boolean result = evaluateBinaryExpression(valueExpr, variables, lineNumber);
-                        variables.put(varName, result ? "TRUE" : "FALSE");
+                        setVariableValue(varName, result ? "TRUE" : "FALSE");
                     }
                 } catch (Exception e) {
                     terminate(lineNumber, "Error assigning value to variable '" + varName + "'.");
@@ -1955,18 +2023,16 @@ final class Interpreter {
             } else if (nextLine.startsWith("}ELSE") || nextLine.startsWith("} ELSE")) {
                 // Handle }ELSE or } ELSE on same line
                 // But we already executed the IF block, so we should SKIP the ELSE
-                System.out.println("DEBUG: Skipping ELSE block because IF was true");
+                
                 braceCount = 1;
                 i++; // Move past the }ELSE THEN { or } ELSE THEN { line
                 while (i < lines.length && braceCount > 0) {
                     String blockLine = lines[i].trim();
-                    System.out.println("DEBUG: Skipping line in ELSE: '" + blockLine + "'");
                     if (blockLine.contains("}")) braceCount--;
                     if (braceCount > 0 && blockLine.contains("{")) braceCount++;
                     i++;
                 }
-                i--; // Back up
-                System.out.println("DEBUG: Done skipping ELSE, returning i=" + i);
+                i--; 
                 return i;
             }
             return i;
@@ -2155,142 +2221,16 @@ final class Interpreter {
 
             // Handle IF statements
             if (line.startsWith("IF [")) {
-                // Extract condition
-                String condition = extractCondition(line);
-                boolean conditionTrue = evaluateBooleanExpression(condition, variables);
-                
-                // Find the block content
-                StringBuilder ifBlock = new StringBuilder();
-                i++; // Move past IF line
-                int braceCount = 1;
-                while (i < lines.length && braceCount > 0) {
-                    String blockLine = lines[i].trim();
-                    // Check for closing brace first, before opening brace
-                    if (blockLine.contains("}")) braceCount--;
-                    if (braceCount > 0 && blockLine.contains("{")) braceCount++;
-                    if (braceCount > 0) {
-                        ifBlock.append(blockLine).append("\n");
-                    }
-                    i++;
-                }
-                i--; // Back up one since loop will increment
-                
-                boolean executedBranch = false;
-                if (conditionTrue) {
-                    executeBlockInternal(ifBlock.toString());
-                    executedBranch = true;
-                }
-                
-                // Handle ELSE IF and ELSE
-                // Check current line first (in case }ELSE is on same line as closing brace)
-                String currentLine = (i < lines.length) ? lines[i].trim() : "";
-                if (currentLine.startsWith("}ELSE") || currentLine.startsWith("} ELSE")) {
-                    // Process the ELSE/ELSE IF on the current line
-                    if (currentLine.startsWith("}ELSE IF [") || currentLine.startsWith("} ELSE IF [")) {
-                        String elseIfCondition = extractCondition(currentLine);
-                        StringBuilder elseIfBlock = new StringBuilder();
-                        i++; // Move past ELSE IF line
-                        braceCount = 1;
-                        while (i < lines.length && braceCount > 0) {
-                            String blockLine = lines[i].trim();
-                            if (blockLine.contains("}")) braceCount--;
-                            if (braceCount > 0 && blockLine.contains("{")) braceCount++;
-                            if (braceCount > 0) {
-                                elseIfBlock.append(blockLine).append("\n");
-                            }
-                            i++;
-                        }
-                        i--; // Back up one
-                        
-                        if (!executedBranch && evaluateBooleanExpression(elseIfCondition, variables)) {
-                            executeBlockInternal(elseIfBlock.toString());
-                            executedBranch = true;
-                        }
-                    } else if (currentLine.startsWith("}ELSE THEN {") || currentLine.startsWith("} ELSE THEN {")) {
-                        StringBuilder elseBlock = new StringBuilder();
-                        i++; // Move past ELSE line
-                        braceCount = 1;
-                        while (i < lines.length && braceCount > 0) {
-                            String blockLine = lines[i].trim();
-                            if (blockLine.contains("}")) braceCount--;
-                            if (braceCount > 0 && blockLine.contains("{")) braceCount++;
-                            if (braceCount > 0) {
-                                elseBlock.append(blockLine).append("\n");
-                            }
-                            i++;
-                        }
-                        i--; // Back up one
-                        
-                        if (!executedBranch) {
-                            executeBlockInternal(elseBlock.toString());
-                        }
-                    }
-                    // Skip checking next lines since we processed the ELSE on current line
-                    if (breakFlag || continueFlag) {
-                        return;
-                    }
+                // Use the new improved IF/ELSE IF/ELSE handling
+                int result = handleIfElseChain(lines, i, blockLineNumber);
+                if (result == -1) {
+                    // Single line processed, continue to next line
+                    continue;
+                    } else {
+                    // Multi-line processed, jump to result index
+                    i = result;
                     continue;
                 }
-                
-                while (i + 1 < lines.length) {
-                    int nextIdx = i + 1;
-                    if (nextIdx >= lines.length) break;
-                    String nextLine = lines[nextIdx].trim();
-                    
-                    if (nextLine.startsWith("ELSE IF [") || nextLine.startsWith("}ELSE IF [") || nextLine.startsWith("} ELSE IF [")) {
-                        i = nextIdx;
-                        String elseIfCondition = extractCondition(nextLine);
-                        StringBuilder elseIfBlock = new StringBuilder();
-                        i++; // Move past ELSE IF line
-                        braceCount = 1;
-                        while (i < lines.length && braceCount > 0) {
-                            String blockLine = lines[i].trim();
-                            // Check for closing brace first, before opening brace
-                            if (blockLine.contains("}")) braceCount--;
-                            if (braceCount > 0 && blockLine.contains("{")) braceCount++;
-                            if (braceCount > 0) {
-                                elseIfBlock.append(blockLine).append("\n");
-                            }
-                            i++;
-                        }
-                        i--; // Back up one
-                        
-                        if (!executedBranch && evaluateBooleanExpression(elseIfCondition, variables)) {
-                            executeBlockInternal(elseIfBlock.toString());
-                            executedBranch = true;
-                        }
-                    } else if (nextLine.startsWith("ELSE THEN {") || nextLine.startsWith("}ELSE THEN {") || nextLine.startsWith("} ELSE THEN {")) {
-                        i = nextIdx;
-                        StringBuilder elseBlock = new StringBuilder();
-                        i++; // Move past ELSE line
-                        braceCount = 1;
-                        while (i < lines.length && braceCount > 0) {
-                            String blockLine = lines[i].trim();
-                            // Check for closing brace first, before opening brace
-                            if (blockLine.contains("}")) braceCount--;
-                            if (braceCount > 0 && blockLine.contains("{")) braceCount++;
-                            if (braceCount > 0) {
-                                elseBlock.append(blockLine).append("\n");
-                            }
-                            i++;
-                        }
-                        i--; // Back up one
-                        
-                        if (!executedBranch) {
-                            executeBlockInternal(elseBlock.toString());
-                        }
-                        break; // End of IF-ELSE chain
-                    } else {
-                        break; // No more ELSE IF/ELSE
-                    }
-                }
-                
-                // Check if BREAK or CONTINUE was triggered after processing IF/ELSE chain
-                if (breakFlag || continueFlag) {
-                    return;
-                }
-                
-                continue;
             }
 
             // Handle SELECT (switch) blocks
@@ -2334,6 +2274,61 @@ final class Interpreter {
                 continue;
             }
 
+            // Handle WHILE loops
+            if (line.startsWith("WHILE")) {
+                if (!line.contains("THEN")) {
+                    terminate(blockLineNumber, "Error: Missing THEN in WHILE statement → " + line);
+                }
+                if (!line.contains("{")) {
+                    terminate(blockLineNumber, "Error: Missing '{' after THEN in WHILE statement → " + line);
+                }
+                
+                // Extract condition from WHILE statement
+                String condition = extractCondition(line, blockLineNumber);
+                
+                // Read block content from subsequent lines
+                StringBuilder whileBlockBuilder = new StringBuilder();
+                int braceCount = 1; // We already have one opening brace
+                i++; // Move to next line
+                while (i < lines.length && braceCount > 0) {
+                    String blockLine = lines[i].trim();
+                    if (blockLine.contains("{")) {
+                        braceCount++;
+                    }
+                    if (blockLine.contains("}")) {
+                        braceCount--;
+                    }
+                    if (braceCount > 0) {
+                        whileBlockBuilder.append(blockLine).append("\n");
+                    }
+                    i++;
+                }
+                i--; // Adjust for the loop increment
+                String whileBlock = whileBlockBuilder.toString();
+                
+                // Execute the loop with proper scoping
+                boolean wasInLoop = this.inLoop;
+                this.inLoop = true; // Mark that we're inside a loop
+                
+                while (evaluateBinaryExpression(condition, variables, blockLineNumber)) {
+                    executeBlockInternal(whileBlock);
+                    
+                    // Check for break flag
+                    if (this.breakFlag) {
+                        this.breakFlag = false;
+                        break;
+                    }
+                    
+                    // Check for continue flag
+                    if (this.continueFlag) {
+                        this.continueFlag = false;
+                        continue;
+                    }
+                }
+                this.inLoop = wasInLoop; // Restore previous loop state
+                continue;
+            }
+
             // Skip TASK definitions (already parsed in preprocessing)
             if (line.startsWith("TASK") && line.contains("DO {")) {
                 // Skip the entire TASK block
@@ -2360,8 +2355,8 @@ final class Interpreter {
                 if (isReservedKeyword(varName)) {
                     terminate(blockLineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                 }
-                // Enforce global uniqueness across all types
-                ensureGloballyUniqueVarName(varName, blockLineNumber);
+                
+                
                 if (parts.length < 2) {
                     variables.put(varName, 0);
                     continue;
@@ -2401,15 +2396,14 @@ final class Interpreter {
                 if (isReservedKeyword(varName)) {
                     terminate(blockLineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                 }
-                // Enforce global uniqueness across all types
-                ensureGloballyUniqueVarName(varName, blockLineNumber);
+                
                 if (valueExpr == null) {
-                    variables.put(varName, 0.0);
+                            setVariableValue(varName, 0.0);
                     continue;
                 }
                 try {
                     double result = evaluateExpression(valueExpr, variables);
-                    variables.put(varName, result);
+                    setVariableValue(varName, result);
                 } catch (Exception e) {
                     terminate(blockLineNumber, "Error: Invalid DECIMAL expression — must contain only numeric or valid variable values.");
                 }
@@ -2440,10 +2434,9 @@ final class Interpreter {
                 if (isReservedKeyword(varName)) {
                     terminate(blockLineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                 }
-                // Enforce global uniqueness across all types
-                ensureGloballyUniqueVarName(varName, blockLineNumber);
+                
                 if (valueStr == null) {
-                    variables.put(varName, ' ');
+                    setVariableValue(varName, ' ');
                     continue;
                 }
                 if (valueStr.startsWith("\"") || valueStr.endsWith("\"")) {
@@ -2455,7 +2448,7 @@ final class Interpreter {
                 if (valueStr.length() != 3) {
                     terminate(blockLineNumber, "Error: LETTER must contain exactly one character inside single quotes (e.g., 'A').");
                 }
-                variables.put(varName, valueStr.charAt(1));
+                            setVariableValue(varName, valueStr.charAt(1));
                 continue;
             }
 
@@ -2480,10 +2473,9 @@ final class Interpreter {
                 if (isReservedKeyword(varName)) {
                     terminate(blockLineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                 }
-                // Enforce global uniqueness across all types
-                ensureGloballyUniqueVarName(varName, blockLineNumber);
+                
                 if (parts.length < 2) {
-                    variables.put(varName, "");
+                    setVariableValue(varName, "");
                     continue;
                 }
                 String valueStr = parts[1].trim();
@@ -2529,14 +2521,14 @@ final class Interpreter {
                     terminate(blockLineNumber, "Error: '" + varName + "' is a reserved keyword and cannot be used as a variable name.");
                 }
                 // Enforce global uniqueness across all types
-                ensureGloballyUniqueVarName(varName, blockLineNumber);
+                
                 if (valueExpr == null) {
-                    variables.put(varName, "FALSE");
+                    setVariableValue(varName, "FALSE");
                     continue;
                 }
                 try {
                     boolean result = evaluateBinaryExpression(valueExpr, variables);
-                    variables.put(varName, result ? "TRUE" : "FALSE");
+                    setVariableValue(varName, result ? "TRUE" : "FALSE");
                 } catch (Exception e) {
                     terminate(blockLineNumber, "Error: Invalid BINARY expression.");
                 }
@@ -2608,7 +2600,7 @@ final class Interpreter {
                         variables.put(varName, truncatedValue);
                     } else if (oldValue instanceof Double) {
                         double result = evaluateExpression(valueExpr, variables);
-                        variables.put(varName, result);
+                        setVariableValue(varName, result);
                     } else if (oldValue instanceof Character) {
                         if (valueExpr.length() == 3 && valueExpr.startsWith("'") && valueExpr.endsWith("'")) {
                             variables.put(varName, valueExpr.charAt(1));
@@ -2620,7 +2612,7 @@ final class Interpreter {
                         if (oldValue.equals("TRUE") || oldValue.equals("FALSE")) {
                             // It's a BINARY variable
                             if (valueExpr.equalsIgnoreCase("TRUE") || valueExpr.equalsIgnoreCase("FALSE")) {
-                                variables.put(varName, valueExpr.toUpperCase());
+                                setVariableValue(varName, valueExpr.toUpperCase());
                             } else {
                                 terminate(blockLineNumber, "Error: Invalid value for BINARY variable.");
                             }
@@ -2803,6 +2795,80 @@ final class Interpreter {
         }
     }
 
+    /**
+     * Gets a variable value from the scope stack (searches from top to bottom)
+     * @param name The variable name
+     * @return The variable value, or null if not found
+     */
+    private Object getVariable(String name) {
+        for (Map<String, Object> scope : scopeStack) {
+            if (scope.containsKey(name)) {
+                return scope.get(name);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Sets a variable value in the appropriate scope
+     * @param name The variable name
+     * @param value The variable value
+     */
+    private void setVariable(String name, Object value) {
+        // First, try to find the variable in existing scopes (top to bottom)
+        for (Map<String, Object> scope : scopeStack) {
+            if (scope.containsKey(name)) {
+                scope.put(name, value);
+                return;
+            }
+        }
+        // If not found, add to the top scope (most recent)
+        if (!scopeStack.isEmpty()) {
+            scopeStack.peek().put(name, value);
+        } else {
+            // Fallback to the main variables map if no scopes exist
+            variables.put(name, value);
+        }
+    }
+
+    /**
+     * Pushes a new scope onto the stack
+     */
+    private void pushScope() {
+        scopeStack.push(new HashMap<>());
+    }
+
+    /**
+     * Pops the top scope from the stack
+     */
+    private void popScope() {
+        if (!scopeStack.isEmpty()) {
+            scopeStack.pop();
+        }
+    }
+
+    /**
+     * Gets a variable value with scope stack support
+     * @param name The variable name
+     * @return The variable value, or null if not found
+     */
+    private Object getVariableValue(String name) {
+        // For now, just use the main variables map
+        // The scope stack will be used for function calls only
+        return variables.get(name);
+    }
+
+    /**
+     * Sets a variable value with scope stack support
+     * @param name The variable name
+     * @param value The variable value
+     */
+    private void setVariableValue(String name, Object value) {
+        // For now, just use the main variables map
+        // The scope stack will be used for function calls only
+        variables.put(name, value);
+    }
+
 
     /**
      * Skips lines until the next ELSE or block end (used for IF-ELSE chains)
@@ -2820,6 +2886,60 @@ final class Interpreter {
                 if (braceCount == 0) break;
                 braceCount--;
             }
+        }
+    }
+
+    /**
+     * Skips all remaining ELSE IF and ELSE blocks in an IF chain
+     * This is called when a condition evaluates to true and we need to skip the rest of the chain
+     * @param br BufferedReader to read from
+     * @param closingLine The line that contains the closing brace and potentially trailing ELSE IF/ELSE
+     */
+    private void skipRemainingIfChain(BufferedReader br, String closingLine) {
+        try {
+            String line = closingLine;
+            
+            // Continue processing until we find the end of the IF chain
+            while (line != null) {
+                // Check if this line has trailing ELSE IF/ELSE
+                if (line.startsWith("}ELSE") || line.startsWith("} ELSE")) {
+                    // Clean up the line if it starts with }ELSE IF or } ELSE IF
+                    if (line.startsWith("}ELSE IF")) {
+                        line = "ELSE IF" + line.substring(8);
+                    } else if (line.startsWith("} ELSE IF")) {
+                        line = "ELSE IF" + line.substring(9);
+                    } else if (line.startsWith("}ELSE")) {
+                        line = "ELSE" + line.substring(5);
+                    } else if (line.startsWith("} ELSE")) {
+                        line = "ELSE" + line.substring(6);
+                    }
+                    
+                    // Skip the current block
+                    if (line.contains("{")) {
+                        int braceCount = 1; // We already have one opening brace
+                        while ((line = br.readLine()) != null && braceCount > 0) {
+                            String trimmedLine = line.trim();
+                            if (trimmedLine.contains("}")) {
+                                braceCount--;
+                                // Check if this closing brace has trailing ELSE IF/ELSE
+                                if (braceCount == 0 && (trimmedLine.startsWith("}ELSE") || trimmedLine.startsWith("} ELSE"))) {
+                                    line = trimmedLine;
+                                    break; // Continue the outer loop to process the trailing ELSE IF/ELSE
+                                }
+                            }
+                            if (braceCount > 0 && trimmedLine.contains("{")) braceCount++;
+                        }
+                    } else {
+                        // No opening brace, read next line
+                        line = br.readLine();
+                    }
+                } else {
+                    // No more ELSE IF/ELSE, we're done
+                    break;
+                }
+            }
+        } catch (IOException e) {
+            terminate("Error reading file while skipping remaining IF chain: " + e.getMessage());
         }
     }
 
@@ -3133,11 +3253,11 @@ final class Interpreter {
                     String rawString = part.substring(1, part.length() - 1);
                     sb.append(processEscapeSequences(rawString));
                 }
-                // Variable reference
-                else if (variables.containsKey(part)) {
-                    Object value = variables.get(part);
+                // Variable reference (check scope stack first)
+                else if (getVariableValue(part) != null) {
+                    Object value = getVariableValue(part);
                     sb.append(value != null ? value.toString() : "");
-                }
+                } 
                 // Function call
                 else if (isFunctionCall(part)) {
                     try {
@@ -3164,10 +3284,10 @@ final class Interpreter {
             return processEscapeSequences(rawString);
         }
 
-        // If it's a single variable
-        if (variables.containsKey(expr)) {
-            Object val = variables.get(expr);
-            return val != null ? val.toString() : "";
+        // If it's a single variable (check scope stack first)
+        Object val = getVariableValue(expr);
+        if (val != null) {
+            return val.toString();
         }
 
         // If it's a function call
@@ -3245,9 +3365,9 @@ final class Interpreter {
             return false;
         }
         
-        // Handle variable references
-        if (variables.containsKey(expr)) {
-            Object val = variables.get(expr);
+        // Handle variable references (check scope stack first)
+        Object val = getVariableValue(expr);
+        if (val != null) {
             return val.toString().equalsIgnoreCase("TRUE");
         }
         
@@ -3261,8 +3381,8 @@ final class Interpreter {
         
         // Handle numeric expressions (0 = false, nonzero = true)
         try {
-            double val = evaluateExpression(expr, variables, lineNumber);
-            return val != 0;
+            double numericVal = evaluateExpression(expr, variables, lineNumber);
+            return numericVal != 0;
         } catch (Exception e) {
             // If it's not a numeric expression, try boolean expression evaluation
             return evaluateBooleanExpression(expr, variables, lineNumber);
@@ -3462,7 +3582,17 @@ final class Interpreter {
         // Store original expression for error checking
         String originalExpr = expr;
 
-        // Replace variable names with their actual values (word-boundary safe)
+        // Replace variable names with their actual values using scope stack
+        // First check scope stack, then fallback to variables map
+        for (Map<String, Object> scope : scopeStack) {
+            for (Map.Entry<String, Object> entry : scope.entrySet()) {
+                String varName = entry.getKey();
+                Object value = entry.getValue();
+                expr = expr.replaceAll("\\b" + Pattern.quote(varName) + "\\b", value.toString());
+            }
+        }
+        
+        // Also check the main variables map
         for (Map.Entry<String, Object> entry : variables.entrySet()) {
             String varName = entry.getKey();
             Object value = entry.getValue();
@@ -3808,34 +3938,385 @@ final class Interpreter {
     }
 
     /**
-     * Extracts condition from IF/ELSE IF statements
+     * Extracts condition from IF/ELSE IF statements (non-greedy, first [...] pair only)
      * @param line The line containing the condition
      * @return The extracted condition string
      */
     private String extractCondition(String line) {
         int firstBracket = line.indexOf("[");
-        int lastBracket = line.lastIndexOf("]");
-        if (firstBracket == -1 || lastBracket == -1 || firstBracket == lastBracket) {
-            terminate("Error: Invalid condition format → " + line);
+        if (firstBracket == -1) {
+            terminate("Error: Invalid condition format - missing [ → " + line);
         }
-        return line.substring(firstBracket + 1, lastBracket).trim();
+        
+        // Find the matching closing bracket (non-greedy)
+        int bracketCount = 0;
+        int closingBracket = -1;
+        for (int i = firstBracket; i < line.length(); i++) {
+            if (line.charAt(i) == '[') {
+                bracketCount++;
+            } else if (line.charAt(i) == ']') {
+                bracketCount--;
+                if (bracketCount == 0) {
+                    closingBracket = i;
+                    break;
+                }
+            }
+        }
+        
+        if (closingBracket == -1) {
+            terminate("Error: Invalid condition format - missing ] → " + line);
+        }
+        
+        return line.substring(firstBracket + 1, closingBracket).trim();
     }
     
     /**
-     * Extracts condition from IF/ELSE IF statements with line number error reporting
+     * Extracts condition from IF/ELSE IF statements with line number error reporting (non-greedy, first [...] pair only)
      * @param line The line containing the condition
      * @param lineNumber The line number for error reporting
      * @return The extracted condition string
      */
     private String extractCondition(String line, int lineNumber) {
         int firstBracket = line.indexOf("[");
-        int lastBracket = line.lastIndexOf("]");
-        if (firstBracket == -1 || lastBracket == -1 || firstBracket == lastBracket) {
-            terminate(lineNumber, "Error: Invalid condition format → " + line);
+        if (firstBracket == -1) {
+            terminate(lineNumber, "Error: Invalid condition format - missing [ → " + line);
         }
-        return line.substring(firstBracket + 1, lastBracket).trim();
+        
+        // Find the matching closing bracket (non-greedy)
+        int bracketCount = 0;
+        int closingBracket = -1;
+        for (int i = firstBracket; i < line.length(); i++) {
+            if (line.charAt(i) == '[') {
+                bracketCount++;
+            } else if (line.charAt(i) == ']') {
+                bracketCount--;
+                if (bracketCount == 0) {
+                    closingBracket = i;
+                    break;
+                }
+            }
+        }
+        
+        if (closingBracket == -1) {
+            terminate(lineNumber, "Error: Invalid condition format - missing ] → " + line);
+        }
+        
+        return line.substring(firstBracket + 1, closingBracket).trim();
     }
     
+    /**
+     * Helper class for block reading results
+     */
+    private static class BlockResult {
+        public String blockContent;
+        public String trailingText;
+        public int endIndex;
+        
+        public BlockResult(String blockContent, String trailingText, int endIndex) {
+            this.blockContent = blockContent;
+            this.trailingText = trailingText;
+            this.endIndex = endIndex;
+        }
+    }
+
+    /**
+     * Reads a block content and returns any trailing text after the closing brace
+     * @param lines Array of lines
+     * @param startIndex Starting line index (should be the line after opening brace)
+     * @param lineNumber Line number for error reporting
+     * @return BlockResult containing the block content and trailing text
+     */
+    private BlockResult readBlockAndReturnTrailing(String[] lines, int startIndex, int lineNumber) {
+        StringBuilder blockBuilder = new StringBuilder();
+        int braceCount = 1; // We already have one opening brace
+        int i = startIndex;
+        String trailingText = "";
+        
+        while (i < lines.length && braceCount > 0) {
+            String blockLine = lines[i].trim();
+            
+            // Check for closing brace first
+            if (blockLine.contains("}")) {
+                braceCount--;
+                if (braceCount == 0) {
+                    // Found the closing brace - check for trailing text
+                    int closingBraceIndex = blockLine.indexOf("}");
+                    if (closingBraceIndex != -1 && closingBraceIndex < blockLine.length() - 1) {
+                        trailingText = blockLine.substring(closingBraceIndex + 1).trim();
+                    }
+                    break;
+                }
+            }
+            
+            if (blockLine.contains("{")) {
+                braceCount++;
+            }
+            
+            if (braceCount > 0) {
+                blockBuilder.append(blockLine).append("\n");
+            }
+            i++;
+        }
+        
+        if (braceCount > 0) {
+            terminate(lineNumber, "Error: Unclosed block - missing closing brace");
+        }
+        
+        return new BlockResult(blockBuilder.toString(), trailingText, i);
+    }
+
+    /**
+     * Handles IF/ELSE IF/ELSE statements with proper single-line and multi-line support
+     * @param lines Array of lines
+     * @param startIndex Starting line index
+     * @param lineNumber Line number for error reporting
+     * @return The index after processing the entire IF chain
+     */
+    private int handleIfElseChain(String[] lines, int startIndex, int lineNumber) {
+        int i = startIndex;
+        String line = lines[i].trim();
+        boolean executedBranch = false;
+        
+        // Check if this is a single-line IF chain (contains } ELSE IF or } ELSE)
+        boolean isSingleLineChain = line.contains("} ELSE IF") || line.contains("} ELSE");
+        
+        if (isSingleLineChain) {
+            // Handle single-line IF/ELSE IF/ELSE chain
+            return handleSingleLineIfChain(line, lineNumber);
+        } else {
+            // Handle multi-line IF/ELSE IF/ELSE chain
+            return handleMultiLineIfChain(lines, startIndex, lineNumber);
+        }
+    }
+
+    /**
+     * Handles single-line IF/ELSE IF/ELSE chains
+     */
+    private int handleSingleLineIfChain(String line, int lineNumber) {
+        boolean executedBranch = false;
+        String remaining = line;
+        
+        // Process IF statement
+        if (remaining.startsWith("IF [")) {
+            // Extract condition from IF
+            String condition = extractCondition(remaining, lineNumber);
+            boolean result = evaluateBinaryExpression(condition, variables, lineNumber);
+            
+            if (result) {
+                // Extract and execute IF block
+                int ifStart = remaining.indexOf("{");
+                int ifEnd = findMatchingBrace(remaining, ifStart);
+                if (ifStart != -1 && ifEnd != -1) {
+                    String ifBlock = remaining.substring(ifStart + 1, ifEnd).trim();
+                    executeBlockInternal(ifBlock);
+                    executedBranch = true;
+                }
+                remaining = remaining.substring(ifEnd + 1).trim();
+            } else {
+                // Skip IF block and find ELSE IF/ELSE
+                int ifStart = remaining.indexOf("{");
+                int ifEnd = findMatchingBrace(remaining, ifStart);
+                if (ifStart != -1 && ifEnd != -1) {
+                    remaining = remaining.substring(ifEnd + 1).trim();
+                }
+            }
+        }
+        
+        // Process ELSE IF statements
+        while (!executedBranch && remaining.startsWith("ELSE IF [")) {
+            String condition = extractCondition(remaining, lineNumber);
+            boolean result = evaluateBinaryExpression(condition, variables, lineNumber);
+            
+            if (result) {
+                // Extract and execute ELSE IF block
+                int elseIfStart = remaining.indexOf("{");
+                int elseIfEnd = findMatchingBrace(remaining, elseIfStart);
+                if (elseIfStart != -1 && elseIfEnd != -1) {
+                    String elseIfBlock = remaining.substring(elseIfStart + 1, elseIfEnd).trim();
+                    executeBlockInternal(elseIfBlock);
+                    executedBranch = true;
+                }
+                remaining = remaining.substring(elseIfEnd + 1).trim();
+            } else {
+                // Skip ELSE IF block
+                int elseIfStart = remaining.indexOf("{");
+                int elseIfEnd = findMatchingBrace(remaining, elseIfStart);
+                if (elseIfStart != -1 && elseIfEnd != -1) {
+                    remaining = remaining.substring(elseIfEnd + 1).trim();
+                }
+            }
+        }
+        
+        // Process ELSE statement
+        if (!executedBranch && remaining.startsWith("ELSE")) {
+            int elseStart = remaining.indexOf("{");
+            int elseEnd = findMatchingBrace(remaining, elseStart);
+            if (elseStart != -1 && elseEnd != -1) {
+                String elseBlock = remaining.substring(elseStart + 1, elseEnd).trim();
+                executeBlockInternal(elseBlock);
+            }
+        }
+        
+        return -1; // Single line processed, signal to continue to next line
+    }
+
+    /**
+     * Handles multi-line IF/ELSE IF/ELSE chains
+     */
+    private int handleMultiLineIfChain(String[] lines, int startIndex, int lineNumber) {
+        int i = startIndex;
+        String line = lines[i].trim();
+        boolean executedBranch = false;
+        
+        // Process IF statement
+        if (line.startsWith("IF [")) {
+            String condition = extractCondition(line, lineNumber);
+            boolean result = evaluateBinaryExpression(condition, variables, lineNumber);
+            
+            if (result) {
+                // Multi-line IF - read block
+                BlockResult ifResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
+                executeBlockInternal(ifResult.blockContent);
+                executedBranch = true;
+                i = ifResult.endIndex;
+                
+                // Check for trailing ELSE IF/ELSE
+                if (!ifResult.trailingText.isEmpty()) {
+                    i = processTrailingElseIfElse(lines, i, ifResult.trailingText, executedBranch, lineNumber);
+                    return i;
+                }
+            } else {
+                // Multi-line IF - skip block and check for ELSE IF/ELSE
+                BlockResult skipResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
+                i = skipResult.endIndex;
+                
+                if (!skipResult.trailingText.isEmpty()) {
+                    i = processTrailingElseIfElse(lines, i, skipResult.trailingText, executedBranch, lineNumber);
+                    return i;
+                }
+            }
+        }
+        
+        // Process remaining ELSE IF/ELSE statements
+        while (i + 1 < lines.length && !executedBranch) {
+            i++;
+            String nextLine = lines[i].trim();
+            
+            if (nextLine.startsWith("ELSE IF [")) {
+                String condition = extractCondition(nextLine, lineNumber);
+                boolean result = evaluateBinaryExpression(condition, variables, lineNumber);
+                
+                if (result) {
+                    // Multi-line ELSE IF
+                    BlockResult elseIfResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
+                    executeBlockInternal(elseIfResult.blockContent);
+                    executedBranch = true;
+                    i = elseIfResult.endIndex;
+                    
+                    if (!elseIfResult.trailingText.isEmpty()) {
+                        i = processTrailingElseIfElse(lines, i, elseIfResult.trailingText, executedBranch, lineNumber);
+                        return i;
+                    }
+                } else {
+                    // Skip ELSE IF block
+                    BlockResult skipElseIfResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
+                    i = skipElseIfResult.endIndex;
+                    
+                    if (!skipElseIfResult.trailingText.isEmpty()) {
+                        i = processTrailingElseIfElse(lines, i, skipElseIfResult.trailingText, executedBranch, lineNumber);
+                        return i;
+                    }
+                }
+            } else if (nextLine.startsWith("ELSE")) {
+                // Multi-line ELSE
+                BlockResult elseResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
+                executeBlockInternal(elseResult.blockContent);
+                executedBranch = true;
+                i = elseResult.endIndex;
+                break;
+            } else {
+                break; // No more ELSE IF/ELSE
+            }
+        }
+        
+        return i;
+    }
+
+    /**
+     * Finds the matching closing brace for an opening brace
+     */
+    private int findMatchingBrace(String text, int startIndex) {
+        int braceCount = 0;
+        for (int i = startIndex; i < text.length(); i++) {
+            if (text.charAt(i) == '{') {
+                braceCount++;
+            } else if (text.charAt(i) == '}') {
+                braceCount--;
+                if (braceCount == 0) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Processes trailing ELSE IF/ELSE text from the same line
+     */
+    private int processTrailingElseIfElse(String[] lines, int currentIndex, String trailingText, boolean executedBranch, int lineNumber) {
+        String remaining = trailingText;
+        
+        while (!remaining.isEmpty() && !executedBranch) {
+            remaining = remaining.trim();
+            
+            if (remaining.startsWith("ELSE IF [")) {
+                String condition = extractCondition(remaining, lineNumber);
+                boolean result = evaluateBinaryExpression(condition, variables, lineNumber);
+                
+                if (result) {
+                    if (remaining.contains("}")) {
+                        // Single-line ELSE IF
+                        int openBrace = remaining.indexOf("{");
+                        int closeBrace = remaining.lastIndexOf("}");
+                        if (openBrace != -1 && closeBrace != -1) {
+                            String blockContent = remaining.substring(openBrace + 1, closeBrace).trim();
+                            executeBlockInternal(blockContent);
+                            executedBranch = true;
+                            
+                            remaining = remaining.substring(closeBrace + 1).trim();
+                        }
+                    } else {
+                        // This shouldn't happen in trailing text, but handle it
+                        break;
+                    }
+                } else {
+                    // Skip this ELSE IF
+                    if (remaining.contains("}")) {
+                        int closeBrace = remaining.lastIndexOf("}");
+                        remaining = remaining.substring(closeBrace + 1).trim();
+                    } else {
+                        break;
+                    }
+                }
+            } else if (remaining.startsWith("ELSE")) {
+                if (remaining.contains("}")) {
+                    // Single-line ELSE
+                    int openBrace = remaining.indexOf("{");
+                    int closeBrace = remaining.lastIndexOf("}");
+                    if (openBrace != -1 && closeBrace != -1) {
+                        String blockContent = remaining.substring(openBrace + 1, closeBrace).trim();
+                        executeBlockInternal(blockContent);
+                        executedBranch = true;
+                    }
+                }
+                break;
+            } else {
+                break;
+            }
+        }
+        
+        return currentIndex;
+    }
 
     /**
      * Determines if an expression is a boolean/comparison expression
@@ -4055,11 +4536,6 @@ final class Interpreter {
     * Ensure that a variable is not already declared (regardless of type).
     * Throws error if variable already exists under any type.
     */
-    private void ensureGloballyUniqueVarName(String varName, int lineNumber) {
-        if (variables.containsKey(varName)) {
-            terminate(lineNumber, "Error: Variable '" + varName + "' is already declared. Variable names must be unique across all types.");
-        }
-    }
     
     /**
      * Pre-parses the source code to find and register all TASK definitions.
