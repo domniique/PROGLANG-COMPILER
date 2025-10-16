@@ -630,37 +630,9 @@ final class Interpreter {
                     if (conditionTrue) {
                         executeBlock(block.toString(), variables);
                         skipElse = true;   // ✅ mark chain as already executed
-                        
-                        // CRITICAL FIX: If IF condition was true, skip ALL remaining ELSE IF/ELSE blocks
-                        if (closingLine != null && (closingLine.startsWith("}ELSE") || closingLine.startsWith("} ELSE"))) {
-                            // Skip all remaining ELSE IF/ELSE blocks in this chain
-                            // Since we already executed the IF block, skip everything until the end of the chain
-                            String remainingLine = closingLine;
-                            while (remainingLine != null && (remainingLine.startsWith("}ELSE") || remainingLine.startsWith("} ELSE"))) {
-                                // Skip the current ELSE IF/ELSE block
-                                if (remainingLine.contains("{")) {
-                                    int skipBraceCount = 1; // We already have one opening brace
-                                    while ((remainingLine = br.readLine()) != null && skipBraceCount > 0) {
-                                        String trimmedLine = remainingLine.trim();
-                                        if (trimmedLine.contains("}")) {
-                                            skipBraceCount--;
-                                            if (skipBraceCount == 0 && (trimmedLine.startsWith("}ELSE") || trimmedLine.startsWith("} ELSE"))) {
-                                                break; // Continue to next ELSE IF/ELSE
-                                            }
-                                        }
-                                        if (skipBraceCount > 0 && trimmedLine.contains("{")) skipBraceCount++;
-                                    }
-                    } else {
-                                    remainingLine = br.readLine();
-                                }
-                            }
-                        }
-                        // End of IF chain - reset flags and continue to next line
-                        inIfChain = false;
-                        skipElse = false;
-                        continue;
                     } else {
                         skipElse = false;  // ✅ still open to ELSE IF / ELSE
+                    }
                     
                     // Check if the closing line contains ELSE IF or ELSE on the same line
                     if (closingLine != null && (closingLine.startsWith("}ELSE") || closingLine.startsWith("} ELSE"))) {
@@ -669,27 +641,14 @@ final class Interpreter {
                         lineNumber++; // Increment line number since we're processing this line now
                         // Don't continue - let the code fall through to process ELSE IF/ELSE
                     } else {
-                            // End of IF chain
-                            inIfChain = false;
-                            skipElse = false;
                     continue;
-                        }
                     }
                 }
 
-                // Handle ELSE IF statements (including those that start with }ELSE IF)
-                else if (line.startsWith("ELSE IF") || line.startsWith("}ELSE IF") || line.startsWith("} ELSE IF")) {
+                else if (line.startsWith("ELSE IF")) {
                     if (!inIfChain) {
                         terminate(lineNumber, "Error: 'ELSE IF' without preceding IF.");
                     }
-                    
-                    // Clean up the line if it starts with }ELSE IF or } ELSE IF
-                    if (line.startsWith("}ELSE IF")) {
-                        line = "ELSE IF" + line.substring(8); // Remove "}ELSE IF" and replace with "ELSE IF"
-                    } else if (line.startsWith("} ELSE IF")) {
-                        line = "ELSE IF" + line.substring(9); // Remove "} ELSE IF" and replace with "ELSE IF"
-                    }
-                    
                     if (!line.contains("THEN")) {
                         terminate(lineNumber, "Error: Missing THEN in ELSE IF statement → " + line);
                     }
@@ -725,16 +684,6 @@ final class Interpreter {
                     if (conditionTrue) {
                         executeBlock(block.toString(), variables);
                         skipElse = true; // ✅ mark this chain as done
-                        
-                        // CRITICAL FIX: If ELSE IF condition was true, skip ALL remaining ELSE IF/ELSE blocks
-                        if (closingLine != null && (closingLine.startsWith("}ELSE") || closingLine.startsWith("} ELSE"))) {
-                            // Skip all remaining ELSE IF/ELSE blocks in this chain
-                            skipRemainingIfChain(br, closingLine);
-                        }
-                        // End of IF chain - reset flags and continue to next line
-                        inIfChain = false;
-                        skipElse = false;
-                        continue;
                     }
                     
                     // Check if the closing line contains ELSE IF or ELSE on the same line
@@ -744,26 +693,15 @@ final class Interpreter {
                         lineNumber++; // Increment line number since we're processing this line now
                         // Don't continue - let the code fall through to process ELSE IF/ELSE
                     } else {
-                        // End of IF chain
-                        inIfChain = false;
-                        skipElse = false;
                     continue;
                     }
                 }
 
-                // Handle ELSE statements (including those that start with }ELSE)
-                else if (line.startsWith("ELSE") || line.startsWith("}ELSE") || line.startsWith("} ELSE")) {
+                else if (line.startsWith("ELSE")) {
+                    
                     if (!inIfChain) {
                         terminate(lineNumber, "Error: 'ELSE' without preceding IF.");
                     }
-                    
-                    // Clean up the line if it starts with }ELSE or } ELSE
-                    if (line.startsWith("}ELSE")) {
-                        line = "ELSE" + line.substring(5); // Remove "}ELSE" and replace with "ELSE"
-                    } else if (line.startsWith("} ELSE")) {
-                        line = "ELSE" + line.substring(6); // Remove "} ELSE" and replace with "ELSE"
-                    }
-                    
                     if (!line.contains("THEN")) {
                         terminate(lineNumber, "Error: Missing THEN in ELSE statement → " + line);
                     }
@@ -773,16 +711,7 @@ final class Interpreter {
 
                     // ✅ If already executed one branch → skip this
                     if (skipElse) {
-                        // Skip the ELSE block - it starts with { after ELSE THEN
-                        int braceCount = 1; // We already have one opening brace from ELSE THEN {
-                        while ((line = br.readLine()) != null && braceCount > 0) {
-                            String trimmedLine = line.trim();
-                            if (trimmedLine.contains("}")) braceCount--;
-                            if (braceCount > 0 && trimmedLine.contains("{")) braceCount++;
-                        }
-                        // End of IF chain
-                        inIfChain = false;
-                        skipElse = false;
+                        skipBlock(br);
                         continue;
                     }
 
@@ -1348,15 +1277,8 @@ final class Interpreter {
             // Handle IF statements
             if (line.startsWith("IF [")) {
                 // Use the new improved IF/ELSE IF/ELSE handling
-                int result = handleIfElseChain(lines, i, lineNumber);
-                if (result == -1) {
-                    // Single line processed, continue to next line
-                    continue;
-                } else {
-                    // Multi-line processed, jump to result index
-                    i = result;
-                    continue;
-                }
+                i = handleIfElseChain(lines, i, lineNumber);
+                continue;
             }
             
             
@@ -1490,7 +1412,7 @@ final class Interpreter {
                 i = skipTASKBlock(lines, i);
                 continue;
             }
-            
+
             // Handle NUMBER variable declarations (integers)
                 if (line.startsWith("NUMBER ")) {
                 line = line.replace("NUMBER", "").trim();
@@ -1954,234 +1876,7 @@ final class Interpreter {
      * @param lineNumber The line number of the IF statement
      * @return the index of the last line in the IF chain
      */
-    private int processIfChainAndGetEndIndex(String[] lines, int startIndex, int lineNumber) {
-        int i = startIndex;
-        String line = lines[i].trim();
-        
-        // Process IF statement
-        String condition = extractCondition(line, lineNumber);
-        boolean result = evaluateBinaryExpression(condition, variables, lineNumber);
-        
-        if (result) {
-            // Execute IF block
-            StringBuilder block = new StringBuilder();
-            int braceCount = 1; // We already have one opening brace
-            i++; // Move to next line
-            String closingLine = null;
-            while (i < lines.length && braceCount > 0) {
-                String blockLine = lines[i].trim();
-                // Check for closing brace first
-                if (blockLine.contains("}")) {
-                    braceCount--;
-                    closingLine = blockLine;
-                }
-                if (braceCount > 0 && blockLine.contains("{")) {
-                    braceCount++;
-                }
-                    if (braceCount > 0) {
-                    block.append(blockLine).append("\n");
-                }
-                i++;
-            }
-            i--; // Back up to the closing line
-            executeBlockInternal(block.toString());
-            
-            // Check if the closing line has ELSE on it (handle both }ELSE and } ELSE)
-            if (closingLine != null && (closingLine.startsWith("}ELSE") || closingLine.startsWith("} ELSE"))) {
-                // Process the ELSE from the closing line
-                // Don't skip - let the code below process it
-            } else {
-
-            // Skip remaining ELSE IF/ELSE in chain and return final index
-            while (i < lines.length) {
-                    i++; // Move to next line
-                    if (i >= lines.length) break;
-                String nextLine = lines[i].trim();
-                    if (nextLine.startsWith("ELSE IF") || nextLine.startsWith("ELSE") || nextLine.startsWith("} ELSE")) {
-                    i++; // Skip the ELSE IF or ELSE line
-                    // Skip the block content
-                    int skipBraceCount = 1;
-                    while (i < lines.length && skipBraceCount > 0) {
-                        String skipLine = lines[i].trim();
-                            if (skipLine.contains("{")) skipBraceCount++;
-                            if (skipLine.contains("}")) skipBraceCount--;
-                        i++;
-                    }
-                    i--; // Adjust because we increment at the end
-                } else {
-                        i--; // Back up since this line is not part of the chain
-                    break; // End of IF chain
-                }
-                }
-                return i;
-            }
-            
-            // Process ELSE from closing line
-            String nextLine = lines[i].trim();
-            if (nextLine.startsWith("}ELSE IF") || nextLine.startsWith("} ELSE IF")) {
-                // Handle }ELSE IF or } ELSE IF on same line - continue to ELSE IF processing below
-            } else if (nextLine.startsWith("}ELSE") || nextLine.startsWith("} ELSE")) {
-                // Handle }ELSE or } ELSE on same line
-                // But we already executed the IF block, so we should SKIP the ELSE
-                
-                braceCount = 1;
-                i++; // Move past the }ELSE THEN { or } ELSE THEN { line
-                while (i < lines.length && braceCount > 0) {
-                    String blockLine = lines[i].trim();
-                    if (blockLine.contains("}")) braceCount--;
-                    if (braceCount > 0 && blockLine.contains("{")) braceCount++;
-                    i++;
-                }
-                i--; 
-                return i;
-            }
-            return i;
-        } else {
-            // Skip IF block
-            int braceCount = 1; // We already have one opening brace
-            i++; // Move to next line
-            while (i < lines.length && braceCount > 0) {
-                String blockLine = lines[i].trim();
-                // Count all opening and closing braces on this line
-                for (char c : blockLine.toCharArray()) {
-                    if (c == '{') {
-                        braceCount++;
-                    } else if (c == '}') {
-                        braceCount--;
-                        // If we just closed the IF block and this line has ELSE, stop here
-                        if (braceCount == 0 && (blockLine.contains("ELSE IF") || blockLine.contains("ELSE THEN"))) {
-                            // Don't back up - we're already at the ELSE line
-                            break;
-                        }
-                    }
-                }
-                if (braceCount > 0) {
-                    i++;
-                } else {
-                    break; // We've closed the IF block
-                }
-            }
-        }
-        
-        // Process ELSE IF statements
-        // Don't increment i here because the block skipping already positioned us correctly
-        while (i < lines.length) {
-            String nextLine = lines[i].trim();
-            // Handle `} ELSE IF` format
-            if (nextLine.startsWith("} ELSE IF") || nextLine.startsWith("ELSE IF")) {
-                if (!nextLine.contains("THEN")) {
-                    terminate(lineNumber, "Error: Missing THEN in ELSE IF statement → " + nextLine);
-                }
-                if (!nextLine.contains("{")) {
-                    terminate(lineNumber, "Error: Missing '{' after THEN in ELSE IF statement → " + nextLine);
-                }
-                
-                // Extract condition from ELSE IF statement
-                String elseIfCondition = extractCondition(nextLine, lineNumber);
-                boolean elseIfResult = evaluateBinaryExpression(elseIfCondition, variables, lineNumber);
-                
-                if (elseIfResult) {
-                    // Execute ELSE IF block
-                    StringBuilder block = new StringBuilder();
-                    int braceCount = 1; // We already have one opening brace
-                    i++; // Move to next line
-                    while (i < lines.length && braceCount > 0) {
-                        String blockLine = lines[i].trim();
-                        if (blockLine.equals("{")) {
-                            braceCount++;
-                        } else if (blockLine.equals("}")) {
-                            braceCount--;
-                            if (braceCount > 0) {
-                                block.append(blockLine).append("\n");
-                            }
-                        } else {
-                            block.append(blockLine).append("\n");
-                        }
-                        i++;
-                    }
-                    executeBlockInternal(block.toString());
-                    // Skip remaining ELSE in chain and return final index
-                    while (i < lines.length) {
-                        String remainingLine = lines[i].trim();
-                        if (remainingLine.startsWith("ELSE")) {
-                            i++; // Skip the ELSE line
-                            // Skip the block content
-                            int skipBraceCount = 1;
-                            i++; // Move to next line
-                            while (i < lines.length && skipBraceCount > 0) {
-                                String skipLine = lines[i].trim();
-                                if (skipLine.equals("{")) {
-                                    skipBraceCount++;
-                                } else if (skipLine.equals("}")) {
-                                    skipBraceCount--;
-                                }
-                                i++;
-                            }
-                            i--; // Adjust
-                        } else {
-                            break;
-                        }
-                    }
-                    return i;
-                } else {
-                    // Skip ELSE IF block
-                    int braceCount = 1; // We already have one opening brace
-                    i++; // Move to next line
-                    while (i < lines.length && braceCount > 0) {
-                        String blockLine = lines[i].trim();
-                        // Count all opening and closing braces on this line
-                        for (char c : blockLine.toCharArray()) {
-                            if (c == '{') {
-                                braceCount++;
-                            } else if (c == '}') {
-                                braceCount--;
-                                // If we just closed the ELSE IF block and this line has ELSE, stop here
-                                if (braceCount == 0 && (blockLine.contains("ELSE THEN") || blockLine.startsWith("} ELSE"))) {
-                                    // Don't back up - we're already at the ELSE line
-                                    break;
-                                }
-                            }
-                        }
-                        if (braceCount > 0) {
-                            i++;
-                        } else {
-                            break; // We've closed the ELSE IF block
-                        }
-                    }
-                }
-            } else if (nextLine.startsWith("} ELSE THEN") || nextLine.startsWith("} ELSE") || nextLine.startsWith("ELSE")) {
-                if (!nextLine.contains("{")) {
-                    terminate(lineNumber, "Error: Missing '{' after ELSE statement → " + nextLine);
-                }
-                
-                // Execute ELSE block
-                StringBuilder block = new StringBuilder();
-                int braceCount = 1; // We already have one opening brace
-                i++; // Move to next line
-                while (i < lines.length && braceCount > 0) {
-                    String blockLine = lines[i].trim();
-                    if (blockLine.equals("{")) {
-                        braceCount++;
-                    } else if (blockLine.equals("}")) {
-                        braceCount--;
-                        if (braceCount > 0) {
-                            block.append(blockLine).append("\n");
-                        }
-                    } else {
-                        block.append(blockLine).append("\n");
-                    }
-                    i++;
-                }
-                i--; // Back up one
-                executeBlockInternal(block.toString());
-                return i; // Return final index
-            } else {
-                break; // End of IF chain
-            }
-        }
-        
-        return i; // Return final index
-    }
+    // Removed unused method processIfChainAndGetEndIndex
     
     /**
      * Executes a block of code (used for IF/ELSE and WHILE blocks)
@@ -2222,15 +1917,8 @@ final class Interpreter {
             // Handle IF statements
             if (line.startsWith("IF [")) {
                 // Use the new improved IF/ELSE IF/ELSE handling
-                int result = handleIfElseChain(lines, i, blockLineNumber);
-                if (result == -1) {
-                    // Single line processed, continue to next line
-                    continue;
-                    } else {
-                    // Multi-line processed, jump to result index
-                    i = result;
-                    continue;
-                }
+                i = handleIfElseChain(lines, i, blockLineNumber);
+                continue;
             }
 
             // Handle SELECT (switch) blocks
@@ -2800,52 +2488,20 @@ final class Interpreter {
      * @param name The variable name
      * @return The variable value, or null if not found
      */
-    private Object getVariable(String name) {
-        for (Map<String, Object> scope : scopeStack) {
-            if (scope.containsKey(name)) {
-                return scope.get(name);
-            }
-        }
-        return null;
-    }
 
     /**
      * Sets a variable value in the appropriate scope
      * @param name The variable name
      * @param value The variable value
      */
-    private void setVariable(String name, Object value) {
-        // First, try to find the variable in existing scopes (top to bottom)
-        for (Map<String, Object> scope : scopeStack) {
-            if (scope.containsKey(name)) {
-                scope.put(name, value);
-                return;
-            }
-        }
-        // If not found, add to the top scope (most recent)
-        if (!scopeStack.isEmpty()) {
-            scopeStack.peek().put(name, value);
-        } else {
-            // Fallback to the main variables map if no scopes exist
-            variables.put(name, value);
-        }
-    }
 
     /**
      * Pushes a new scope onto the stack
      */
-    private void pushScope() {
-        scopeStack.push(new HashMap<>());
-    }
 
     /**
      * Pops the top scope from the stack
      */
-    private void popScope() {
-        if (!scopeStack.isEmpty()) {
-            scopeStack.pop();
-        }
-    }
 
     /**
      * Gets a variable value with scope stack support
@@ -2886,60 +2542,6 @@ final class Interpreter {
                 if (braceCount == 0) break;
                 braceCount--;
             }
-        }
-    }
-
-    /**
-     * Skips all remaining ELSE IF and ELSE blocks in an IF chain
-     * This is called when a condition evaluates to true and we need to skip the rest of the chain
-     * @param br BufferedReader to read from
-     * @param closingLine The line that contains the closing brace and potentially trailing ELSE IF/ELSE
-     */
-    private void skipRemainingIfChain(BufferedReader br, String closingLine) {
-        try {
-            String line = closingLine;
-            
-            // Continue processing until we find the end of the IF chain
-            while (line != null) {
-                // Check if this line has trailing ELSE IF/ELSE
-                if (line.startsWith("}ELSE") || line.startsWith("} ELSE")) {
-                    // Clean up the line if it starts with }ELSE IF or } ELSE IF
-                    if (line.startsWith("}ELSE IF")) {
-                        line = "ELSE IF" + line.substring(8);
-                    } else if (line.startsWith("} ELSE IF")) {
-                        line = "ELSE IF" + line.substring(9);
-                    } else if (line.startsWith("}ELSE")) {
-                        line = "ELSE" + line.substring(5);
-                    } else if (line.startsWith("} ELSE")) {
-                        line = "ELSE" + line.substring(6);
-                    }
-                    
-                    // Skip the current block
-                    if (line.contains("{")) {
-                        int braceCount = 1; // We already have one opening brace
-                        while ((line = br.readLine()) != null && braceCount > 0) {
-                            String trimmedLine = line.trim();
-                            if (trimmedLine.contains("}")) {
-                                braceCount--;
-                                // Check if this closing brace has trailing ELSE IF/ELSE
-                                if (braceCount == 0 && (trimmedLine.startsWith("}ELSE") || trimmedLine.startsWith("} ELSE"))) {
-                                    line = trimmedLine;
-                                    break; // Continue the outer loop to process the trailing ELSE IF/ELSE
-                                }
-                            }
-                            if (braceCount > 0 && trimmedLine.contains("{")) braceCount++;
-                        }
-                    } else {
-                        // No opening brace, read next line
-                        line = br.readLine();
-                    }
-                } else {
-                    // No more ELSE IF/ELSE, we're done
-                    break;
-                }
-            }
-        } catch (IOException e) {
-            terminate("Error reading file while skipping remaining IF chain: " + e.getMessage());
         }
     }
 
@@ -3257,7 +2859,7 @@ final class Interpreter {
                 else if (getVariableValue(part) != null) {
                     Object value = getVariableValue(part);
                     sb.append(value != null ? value.toString() : "");
-                } 
+                }
                 // Function call
                 else if (isFunctionCall(part)) {
                     try {
@@ -4077,122 +3679,61 @@ final class Interpreter {
         String line = lines[i].trim();
         boolean executedBranch = false;
         
-        // Check if this is a single-line IF chain (contains } ELSE IF or } ELSE)
-        boolean isSingleLineChain = line.contains("} ELSE IF") || line.contains("} ELSE");
-        
-        if (isSingleLineChain) {
-            // Handle single-line IF/ELSE IF/ELSE chain
-            return handleSingleLineIfChain(line, lineNumber);
-        } else {
-            // Handle multi-line IF/ELSE IF/ELSE chain
-            return handleMultiLineIfChain(lines, startIndex, lineNumber);
-        }
-    }
-
-    /**
-     * Handles single-line IF/ELSE IF/ELSE chains
-     */
-    private int handleSingleLineIfChain(String line, int lineNumber) {
-        boolean executedBranch = false;
-        String remaining = line;
-        
-        // Process IF statement
-        if (remaining.startsWith("IF [")) {
-            // Extract condition from IF
-            String condition = extractCondition(remaining, lineNumber);
-            boolean result = evaluateBinaryExpression(condition, variables, lineNumber);
-            
-            if (result) {
-                // Extract and execute IF block
-                int ifStart = remaining.indexOf("{");
-                int ifEnd = findMatchingBrace(remaining, ifStart);
-                if (ifStart != -1 && ifEnd != -1) {
-                    String ifBlock = remaining.substring(ifStart + 1, ifEnd).trim();
-                    executeBlockInternal(ifBlock);
-                    executedBranch = true;
-                }
-                remaining = remaining.substring(ifEnd + 1).trim();
-            } else {
-                // Skip IF block and find ELSE IF/ELSE
-                int ifStart = remaining.indexOf("{");
-                int ifEnd = findMatchingBrace(remaining, ifStart);
-                if (ifStart != -1 && ifEnd != -1) {
-                    remaining = remaining.substring(ifEnd + 1).trim();
-                }
-            }
-        }
-        
-        // Process ELSE IF statements
-        while (!executedBranch && remaining.startsWith("ELSE IF [")) {
-            String condition = extractCondition(remaining, lineNumber);
-            boolean result = evaluateBinaryExpression(condition, variables, lineNumber);
-            
-            if (result) {
-                // Extract and execute ELSE IF block
-                int elseIfStart = remaining.indexOf("{");
-                int elseIfEnd = findMatchingBrace(remaining, elseIfStart);
-                if (elseIfStart != -1 && elseIfEnd != -1) {
-                    String elseIfBlock = remaining.substring(elseIfStart + 1, elseIfEnd).trim();
-                    executeBlockInternal(elseIfBlock);
-                    executedBranch = true;
-                }
-                remaining = remaining.substring(elseIfEnd + 1).trim();
-            } else {
-                // Skip ELSE IF block
-                int elseIfStart = remaining.indexOf("{");
-                int elseIfEnd = findMatchingBrace(remaining, elseIfStart);
-                if (elseIfStart != -1 && elseIfEnd != -1) {
-                    remaining = remaining.substring(elseIfEnd + 1).trim();
-                }
-            }
-        }
-        
-        // Process ELSE statement
-        if (!executedBranch && remaining.startsWith("ELSE")) {
-            int elseStart = remaining.indexOf("{");
-            int elseEnd = findMatchingBrace(remaining, elseStart);
-            if (elseStart != -1 && elseEnd != -1) {
-                String elseBlock = remaining.substring(elseStart + 1, elseEnd).trim();
-                executeBlockInternal(elseBlock);
-            }
-        }
-        
-        return -1; // Single line processed, signal to continue to next line
-    }
-
-    /**
-     * Handles multi-line IF/ELSE IF/ELSE chains
-     */
-    private int handleMultiLineIfChain(String[] lines, int startIndex, int lineNumber) {
-        int i = startIndex;
-        String line = lines[i].trim();
-        boolean executedBranch = false;
-        
         // Process IF statement
         if (line.startsWith("IF [")) {
             String condition = extractCondition(line, lineNumber);
             boolean result = evaluateBinaryExpression(condition, variables, lineNumber);
             
             if (result) {
-                // Multi-line IF - read block
-                BlockResult ifResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
-                executeBlockInternal(ifResult.blockContent);
-                executedBranch = true;
-                i = ifResult.endIndex;
-                
-                // Check for trailing ELSE IF/ELSE
-                if (!ifResult.trailingText.isEmpty()) {
-                    i = processTrailingElseIfElse(lines, i, ifResult.trailingText, executedBranch, lineNumber);
-                    return i;
+                // Check if this is a single-line IF (has } on same line)
+                if (line.contains("}")) {
+                    // Single-line IF - extract block content
+                    int openBrace = line.indexOf("{");
+                    int closeBrace = line.lastIndexOf("}");
+                    if (openBrace != -1 && closeBrace != -1) {
+                        String blockContent = line.substring(openBrace + 1, closeBrace).trim();
+                        executeBlockInternal(blockContent);
+                        executedBranch = true;
+                        
+                        // Check for trailing ELSE IF/ELSE on same line
+                        String trailing = line.substring(closeBrace + 1).trim();
+                        if (!trailing.isEmpty()) {
+                            i = processTrailingElseIfElse(lines, i, trailing, executedBranch, lineNumber);
+                            return i;
+                        }
+                    }
+                } else {
+                    // Multi-line IF - read block
+                    BlockResult ifResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
+                    executeBlockInternal(ifResult.blockContent);
+                    executedBranch = true;
+                    i = ifResult.endIndex;
+                    
+                    // Check for trailing ELSE IF/ELSE
+                    if (!ifResult.trailingText.isEmpty()) {
+                        i = processTrailingElseIfElse(lines, i, ifResult.trailingText, executedBranch, lineNumber);
+                        return i;
+                    }
                 }
             } else {
-                // Multi-line IF - skip block and check for ELSE IF/ELSE
-                BlockResult skipResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
-                i = skipResult.endIndex;
-                
-                if (!skipResult.trailingText.isEmpty()) {
-                    i = processTrailingElseIfElse(lines, i, skipResult.trailingText, executedBranch, lineNumber);
-                    return i;
+                // IF condition false - skip to ELSE IF/ELSE
+                if (line.contains("}")) {
+                    // Single-line IF - extract trailing text
+                    int closeBrace = line.lastIndexOf("}");
+                    String trailing = line.substring(closeBrace + 1).trim();
+                    if (!trailing.isEmpty()) {
+                        i = processTrailingElseIfElse(lines, i, trailing, executedBranch, lineNumber);
+                        return i;
+                    }
+                } else {
+                    // Multi-line IF - skip block and check for ELSE IF/ELSE
+                    BlockResult skipResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
+                    i = skipResult.endIndex;
+                    
+                    if (!skipResult.trailingText.isEmpty()) {
+                        i = processTrailingElseIfElse(lines, i, skipResult.trailingText, executedBranch, lineNumber);
+                        return i;
+                    }
                 }
             }
         }
@@ -4207,32 +3748,69 @@ final class Interpreter {
                 boolean result = evaluateBinaryExpression(condition, variables, lineNumber);
                 
                 if (result) {
-                    // Multi-line ELSE IF
-                    BlockResult elseIfResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
-                    executeBlockInternal(elseIfResult.blockContent);
-                    executedBranch = true;
-                    i = elseIfResult.endIndex;
-                    
-                    if (!elseIfResult.trailingText.isEmpty()) {
-                        i = processTrailingElseIfElse(lines, i, elseIfResult.trailingText, executedBranch, lineNumber);
-                        return i;
+                    if (nextLine.contains("}")) {
+                        // Single-line ELSE IF
+                        int openBrace = nextLine.indexOf("{");
+                        int closeBrace = nextLine.lastIndexOf("}");
+                        if (openBrace != -1 && closeBrace != -1) {
+                            String blockContent = nextLine.substring(openBrace + 1, closeBrace).trim();
+                            executeBlockInternal(blockContent);
+                            executedBranch = true;
+                            
+                            String trailing = nextLine.substring(closeBrace + 1).trim();
+                            if (!trailing.isEmpty()) {
+                                i = processTrailingElseIfElse(lines, i, trailing, executedBranch, lineNumber);
+                                return i;
+                            }
+                        }
+                    } else {
+                        // Multi-line ELSE IF
+                        BlockResult elseIfResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
+                        executeBlockInternal(elseIfResult.blockContent);
+                        executedBranch = true;
+                        i = elseIfResult.endIndex;
+                        
+                        if (!elseIfResult.trailingText.isEmpty()) {
+                            i = processTrailingElseIfElse(lines, i, elseIfResult.trailingText, executedBranch, lineNumber);
+                            return i;
+                        }
                     }
                 } else {
-                    // Skip ELSE IF block
-                    BlockResult skipElseIfResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
-                    i = skipElseIfResult.endIndex;
-                    
-                    if (!skipElseIfResult.trailingText.isEmpty()) {
-                        i = processTrailingElseIfElse(lines, i, skipElseIfResult.trailingText, executedBranch, lineNumber);
-                        return i;
+                    // ELSE IF condition false - skip block
+                    if (nextLine.contains("}")) {
+                        int closeBrace = nextLine.lastIndexOf("}");
+                        String trailing = nextLine.substring(closeBrace + 1).trim();
+                        if (!trailing.isEmpty()) {
+                            i = processTrailingElseIfElse(lines, i, trailing, executedBranch, lineNumber);
+                            return i;
+                        }
+                    } else {
+                        BlockResult skipElseIfResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
+                        i = skipElseIfResult.endIndex;
+                        
+                        if (!skipElseIfResult.trailingText.isEmpty()) {
+                            i = processTrailingElseIfElse(lines, i, skipElseIfResult.trailingText, executedBranch, lineNumber);
+                            return i;
+                        }
                     }
                 }
             } else if (nextLine.startsWith("ELSE")) {
-                // Multi-line ELSE
-                BlockResult elseResult = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
-                executeBlockInternal(elseResult.blockContent);
-                executedBranch = true;
-                i = elseResult.endIndex;
+                if (nextLine.contains("}")) {
+                    // Single-line ELSE
+                    int openBrace = nextLine.indexOf("{");
+                    int closeBrace = nextLine.lastIndexOf("}");
+                    if (openBrace != -1 && closeBrace != -1) {
+                        String blockContent = nextLine.substring(openBrace + 1, closeBrace).trim();
+                        executeBlockInternal(blockContent);
+                        executedBranch = true;
+                    }
+                } else {
+                    // Multi-line ELSE
+                    BlockResult result = readBlockAndReturnTrailing(lines, i + 1, lineNumber);
+                    executeBlockInternal(result.blockContent);
+                    executedBranch = true;
+                    i = result.endIndex;
+                }
                 break;
             } else {
                 break; // No more ELSE IF/ELSE
@@ -4240,24 +3818,6 @@ final class Interpreter {
         }
         
         return i;
-    }
-
-    /**
-     * Finds the matching closing brace for an opening brace
-     */
-    private int findMatchingBrace(String text, int startIndex) {
-        int braceCount = 0;
-        for (int i = startIndex; i < text.length(); i++) {
-            if (text.charAt(i) == '{') {
-                braceCount++;
-            } else if (text.charAt(i) == '}') {
-                braceCount--;
-                if (braceCount == 0) {
-                    return i;
-                }
-            }
-        }
-        return -1;
     }
 
     /**
